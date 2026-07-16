@@ -18,6 +18,7 @@ export type Command = "" | "plan" | "apply" | "init";
 export type CommentMethod = "update" | "recreate";
 export type CommentPr = "always" | "on-diff" | "never";
 export type TagActor = "always" | "on-diff" | "never";
+export type PlanParity = "false" | "true" | "strict";
 
 /**
  * Every `arg-*` input from `action.yml`, parsed into its natural type.
@@ -84,7 +85,7 @@ export interface ActionInputs {
   // plan / artifact
   planFile: string;
   planEncrypt: string;
-  planParity: boolean;
+  planParity: PlanParity;
   preservePlan: boolean;
   uploadPlan: boolean;
   retentionDays: string;
@@ -216,6 +217,17 @@ function parseCommentPr(): CommentPr {
   return value;
 }
 
+/** `false` (off), `true` (warn and proceed on mismatch), or `strict` (fail on mismatch). */
+function parsePlanParity(): PlanParity {
+  const value = enumInput("plan-parity", "false");
+  if (value !== "false" && value !== "true" && value !== "strict") {
+    throw new Error(
+      `Invalid 'plan-parity' input: '${value}'. Expected 'false', 'true', or 'strict'.`,
+    );
+  }
+  return value;
+}
+
 /** `always`/`true` and `on-diff`/`on-change` aliases are preserved for tag-actor. */
 function parseTagActor(): TagActor {
   const value = enumInput("tag-actor", "always");
@@ -279,7 +291,7 @@ export function getInputs(): ActionInputs {
     workingDirectory: str("working-directory"),
     planFile: str("plan-file"),
     planEncrypt: str("plan-encrypt"),
-    planParity: bool("plan-parity", false),
+    planParity: parsePlanParity(),
     preservePlan: bool("preserve-plan", false),
     uploadPlan: bool("upload-plan", true),
     retentionDays: str("retention-days"),

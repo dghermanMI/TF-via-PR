@@ -282,10 +282,11 @@ runs:
         path: ${{ format('{0}{1}tfplan{2}', inputs.arg-chdir || inputs.working-directory, (inputs.arg-chdir || inputs.working-directory) && '/' || '', inputs.plan-encrypt != '' && '.encrypted' || '') }}
         retention-days: ${{ inputs.retention-days }}
 
-    - if: ${{ inputs.plan-parity == 'true' && (steps.download.outcome == 'success' || inputs.plan-file != '') }}
+    - if: ${{ (inputs.plan-parity == 'true' || inputs.plan-parity == 'strict') && (steps.download.outcome == 'success' || inputs.plan-file != '') }}
       env:
         INPUTS_ARG_CHDIR: ${{ inputs.arg-chdir || inputs.working-directory }}
         INPUTS_PLAN_FILE: ${{ inputs.plan-file }}
+        INPUTS_PLAN_PARITY: ${{ inputs.plan-parity }}
         INPUTS_TOOL: ${{ inputs.tool }}
         parity_path: ${{ format('{0}{1}tfplan.parity', inputs.arg-chdir || inputs.working-directory, (inputs.arg-chdir || inputs.working-directory) && '/' || '') }}
         path: ${{ format('{0}{1}tfplan', inputs.arg-chdir || inputs.working-directory, (inputs.arg-chdir || inputs.working-directory) && '/' || '') }}
@@ -299,8 +300,22 @@ runs:
         $INPUTS_TOOL${{ steps.arg.outputs.arg-chdir }} show -json tfplan.parity | jq --sort-keys '[(.resource_changes? // [])[] | select(.change.actions != ["no-op"])]' > tfplan.new
         $INPUTS_TOOL${{ steps.arg.outputs.arg-chdir }} show -json tfplan | jq --sort-keys '[(.resource_changes? // [])[] | select(.change.actions != ["no-op"])]' > tfplan.old
         # If both plan files are identical, then replace the old plan file with the new one to prevent avoidable stale apply.
-        diff --brief tfplan.new tfplan.old && mv --force --verbose "$parity_path" "$path"
-        rm --force tfplan.new tfplan.old "$parity_path"
+        # If they differ, the plan queued for apply no longer matches a fresh plan of current state (e.g. the wrong plan
+        # artifact was downloaded, or state changed since the plan was generated). With plan-parity: true, warn and proceed
+        # (preserving existing behavior); with plan-parity: strict, fail instead of applying a stale plan.
+        if diff --brief tfplan.new tfplan.old; then
+          mv --force --verbose "$parity_path" "$path"
+          rm --force tfplan.new tfplan.old "$parity_path"
+        elif [[ "$INPUTS_PLAN_PARITY" == "strict" ]]; then
+          echo "::error title=Plan parity check failed::The plan queued for apply does not match a fresh plan of current state; refusing to apply a stale plan (plan-parity: strict)."
+          diff tfplan.new tfplan.old || true
+          rm --force tfplan.new tfplan.old "$parity_path"
+          exit 1
+        else
+          echo "::warning title=Plan parity mismatch::The plan queued for apply does not match a fresh plan of current state; applying it anyway. Set plan-parity: strict to fail instead."
+          diff tfplan.new tfplan.old || true
+          rm --force tfplan.new tfplan.old "$parity_path"
+        fi
 
     - if: ${{ inputs.command == 'apply' }}
       id: apply
@@ -320,7 +335,7 @@ runs:
           var_file="${{ steps.arg.outputs.arg-var-file }}"
           var="${{ steps.arg.outputs.arg-var }}"
         else
-          if [[ -n "$INPUTS_PLAN_FILE" && "$INPUTS_PLAN_PARITY" != "true" ]]; then mv --force --verbose "$INPUTS_PLAN_FILE" "$path" 2>/dev/null; fi
+          if [[ -n "$INPUTS_PLAN_FILE" && "$INPUTS_PLAN_PARITY" != "true" && "$INPUTS_PLAN_PARITY" != "strict" ]]; then mv --force --verbose "$INPUTS_PLAN_FILE" "$path" 2>/dev/null; fi
           plan=" tfplan"
           var_file=""
           var=""
@@ -651,7 +666,7 @@ inputs:
     required: false
   plan-parity:
     default: "false"
-    description: "Replace the plan file if it matches a newly-generated one to prevent stale apply (e.g., `false`)."
+    description: "Guard against stale apply by re-planning and comparing before apply: `false` (off), `true` (on; on mismatch warn and proceed), or `strict` (on; on mismatch fail). On a match the freshly-generated plan replaces the queued one (e.g., `strict`)."
     required: false
   pr-number:
     default: ""

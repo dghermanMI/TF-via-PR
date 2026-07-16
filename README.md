@@ -176,7 +176,7 @@ All supported CLI argument inputs are [listed below](#arguments) with accompanyi
 | CLI      | `pr-number`         | Specify PR number in case of unsupported workflow trigger.<br>Example: `123`                                                             |
 | Check    | `format`            | Check format of TF code.<br>Default: `false`                                                                                             |
 | Check    | `validate`          | Check validation of TF code.<br>Default: `false`                                                                                         |
-| Check    | `plan-parity`       | Replace plan file if it matches a newly-generated one to prevent stale apply.<sup>2</sup><br>Default: `false`                            |
+| Check    | `plan-parity`       | Guard against stale apply: `false` (off), `true` (on; mismatch warns and proceeds), or `strict` (on; mismatch fails).<sup>2</sup><br>Default: `false` |
 | Security | `plan-encrypt`      | Encrypt plan file artifact with the given input.<sup>3</sup><br>Example: `${{ secrets.PASSPHRASE }}`                                     |
 | Security | `preserve-plan`     | Preserve plan file "tfplan" in the given working directory after workflow execution.<br>Default: `false`                                 |
 | Security | `upload-plan`       | Upload plan file as GitHub workflow artifact.<br>Default: `true`                                                                         |
@@ -195,7 +195,8 @@ All supported CLI argument inputs are [listed below](#arguments) with accompanyi
 
 1. Both `command: plan` and `command: apply` include: `init`, `fmt` (with `format: true`), `validate` (with `validate: true`), and `workspace` (with `arg-workspace`) commands rolled into it automatically.<br>
     To separately run checks and/or generate outputs only, `command: init` can be used.<br><br>
-1. Originally intended for `merge_group` event trigger, `plan-parity: true` input helps to prevent stale apply within a series of workflow runs when merging multiple PRs.<br><br>
+1. Originally intended for `merge_group` event trigger, `plan-parity: true` input helps to prevent stale apply within a series of workflow runs when merging multiple PRs.<br>
+    On a mismatch, `plan-parity: true` warns and proceeds (preserving prior behavior), while `plan-parity: strict` fails the apply instead of applying a plan that no longer matches current state.<br><br>
 1. The secret string input for `plan-encrypt` can be of any length, as long as it's consistent between encryption (plan) and decryption (apply).<br><br>
 1. The `on-diff` option is true when the exit code of the last TF command is non-zero (ensure `terraform_wrapper`/`tofu_wrapper` is set to `false`).<br><br>
 1. The default behavior of `comment-method` is to update the existing PR comment with the latest plan/apply output, making it easy to track changes over time through the comment's revision history.<br><br>
