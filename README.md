@@ -176,7 +176,7 @@ All supported CLI argument inputs are [listed below](#arguments) with accompanyi
 | CLI      | `pr-number`         | Specify PR number in case of unsupported workflow trigger.<br>Example: `123`                                                             |
 | Check    | `format`            | Check format of TF code.<br>Default: `false`                                                                                             |
 | Check    | `validate`          | Check validation of TF code.<br>Default: `false`                                                                                         |
-| Check    | `plan-parity`       | Replace plan file if it matches a newly-generated one to prevent stale apply.<sup>2</sup><br>Default: `false`                            |
+| Check    | `plan-parity`       | Guard against stale apply: `false` (off), `true` (on; mismatch warns and proceeds), or `strict` (on; mismatch fails).<sup>2</sup><br>Default: `false` |
 | Security | `plan-encrypt`      | Encrypt plan file artifact with the given input.<sup>3</sup><br>Example: `${{ secrets.PASSPHRASE }}`                                     |
 | Security | `preserve-plan`     | Preserve plan file "tfplan" in the given working directory after workflow execution.<br>Default: `false`                                 |
 | Security | `upload-plan`       | Upload plan file as GitHub workflow artifact.<br>Default: `true`                                                                         |

@@ -1,0 +1,105 @@
+---
+name: Test Plan Parity
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - action.yml
+      - tests/parity/**
+      - .github/workflows/test_parity.yml
+    types: [opened, reopened, synchronize]
+
+permissions:
+  actions: read # tf-via-pr lists workflow-run jobs to find its own job id.
+  checks: write # tf-via-pr check-run reporting.
+  contents: read # Required to checkout repository.
+  pull-requests: write # tf-via-pr PR comment (disabled here, granted for safety).
+
+jobs:
+  parity:
+    runs-on: ubuntu-24.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Flat string dimensions only, so the matrix job name stays
+        # "parity (<tool>, <scenario>)" -- which tf-via-pr's job-id matcher can
+        # resolve. Scenario parameters are looked up from the name below.
+        tool:
+          - tofu
+          - terraform
+        scenario:
+          - strict-mismatch-fails
+          - strict-match-succeeds
+          - true-mismatch-warns
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Tofu
+        if: matrix.tool == 'tofu'
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: latest
+          tofu_wrapper: false
+
+      - name: Setup Terraform
+        if: matrix.tool == 'terraform'
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: latest
+          terraform_wrapper: false
+
+      # Map scenario name -> (parity mode, stored-plan var, apply-time var,
+      # expected apply outcome). A stored plan built with `stale` is applied
+      # while the action re-plans with `apply`; different values => mismatch.
+      - name: Resolve scenario
+        id: sc
+        run: |
+          case "${{ matrix.scenario }}" in
+            strict-mismatch-fails) parity=strict; stale=v1; apply=v2; expect=failure ;;
+            strict-match-succeeds) parity=strict; stale=v2; apply=v2; expect=success ;;
+            true-mismatch-warns)   parity=true;   stale=v1; apply=v2; expect=success ;;
+            *) echo "unknown scenario: ${{ matrix.scenario }}"; exit 1 ;;
+          esac
+          {
+            echo "parity=$parity"
+            echo "stale=$stale"
+            echo "apply=$apply"
+            echo "expect=$expect"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Seed stored plan
+        working-directory: tests/parity
+        run: |
+          ${{ matrix.tool }} init -input=false
+          ${{ matrix.tool }} plan -input=false -lock=false -var "content=${{ steps.sc.outputs.stale }}" -out=stale.tfplan
+
+      - name: Apply under test
+        id: apply
+        continue-on-error: true
+        uses: ./
+        with:
+          working-directory: tests/parity
+          tool: ${{ matrix.tool }}
+          command: apply
+          plan-file: tests/parity/stale.tfplan
+          plan-parity: ${{ steps.sc.outputs.parity }}
+          arg-lock: false
+          arg-var: content=${{ steps.sc.outputs.apply }}
+          comment-pr: never
+          tag-actor: never
+
+      - name: Assert outcome
+        run: |
+          got='${{ steps.apply.outcome }}'
+          want='${{ steps.sc.outputs.expect }}'
+          echo "scenario=${{ matrix.scenario }} tool=${{ matrix.tool }} parity=${{ steps.sc.outputs.parity }} got=$got want=$want"
+          if [[ "$got" != "$want" ]]; then
+            echo "::error::plan-parity scenario '${{ matrix.scenario }}' (${{ matrix.tool }}) expected outcome '$want' but got '$got'"
+            exit 1
+          fi
