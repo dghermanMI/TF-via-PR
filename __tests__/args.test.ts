@@ -58,7 +58,7 @@ function makeInputs(
     workingDirectory: "",
     planFile: "",
     planEncrypt: "",
-    planParity: false,
+    planParity: "false",
     preservePlan: false,
     uploadPlan: true,
     retentionDays: "",
