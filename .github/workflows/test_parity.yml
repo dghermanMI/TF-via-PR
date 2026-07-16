@@ -1,0 +1,98 @@
+---
+name: Test Plan Parity
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - action.yml
+      - tests/parity/**
+      - .github/workflows/test_parity.yml
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read # Required to checkout repository.
+
+jobs:
+  parity:
+    runs-on: ubuntu-24.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        tool:
+          - tofu
+          - terraform
+        scenario:
+          # A stored plan built with `stale_var` is applied while the action
+          # re-plans with `apply_var`. Different values => parity mismatch.
+          - name: strict-mismatch-fails
+            parity: strict
+            stale_var: v1
+            apply_var: v2
+            expect: failure
+          - name: strict-match-succeeds
+            parity: strict
+            stale_var: v2
+            apply_var: v2
+            expect: success
+          - name: true-mismatch-warns-and-proceeds
+            parity: "true"
+            stale_var: v1
+            apply_var: v2
+            expect: success
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Tofu
+        if: matrix.tool == 'tofu'
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: latest
+          tofu_wrapper: false
+
+      - name: Setup Terraform
+        if: matrix.tool == 'terraform'
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: latest
+          terraform_wrapper: false
+
+      # Seed a saved plan with stale_var using the tool directly. This becomes
+      # the (possibly stale) plan handed to the action via plan-file.
+      - name: Seed stored plan
+        working-directory: tests/parity
+        run: |
+          ${{ matrix.tool }} init -input=false
+          ${{ matrix.tool }} plan -input=false -lock=false -var "content=${{ matrix.scenario.stale_var }}" -out=stale.tfplan
+
+      # Apply the stored plan with plan-parity active while re-planning with
+      # apply_var. The action's parity step compares stored vs fresh.
+      - name: Apply under test
+        id: apply
+        continue-on-error: true
+        uses: ./
+        with:
+          working-directory: tests/parity
+          tool: ${{ matrix.tool }}
+          command: apply
+          plan-file: tests/parity/stale.tfplan
+          plan-parity: ${{ matrix.scenario.parity }}
+          arg-lock: false
+          arg-var: content=${{ matrix.scenario.apply_var }}
+          comment-pr: never
+          tag-actor: never
+
+      - name: Assert outcome
+        run: |
+          got='${{ steps.apply.outcome }}'
+          want='${{ matrix.scenario.expect }}'
+          echo "scenario=${{ matrix.scenario.name }} tool=${{ matrix.tool }} parity=${{ matrix.scenario.parity }} got=$got want=$want"
+          if [[ "$got" != "$want" ]]; then
+            echo "::error::plan-parity scenario '${{ matrix.scenario.name }}' (${{ matrix.tool }}) expected outcome '$want' but got '$got'"
+            exit 1
+          fi
