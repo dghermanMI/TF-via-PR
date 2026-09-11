@@ -317,6 +317,14 @@ runs:
           rm --force tfplan.new tfplan.old "$parity_path"
         fi
 
+    - if: ${{ inputs.command == 'apply' && inputs.pre-apply-command != '' }}
+      env:
+        INPUTS_PRE_APPLY_COMMAND: ${{ inputs.pre-apply-command }}
+      shell: bash
+      run: |
+        # Run a caller-supplied gate after plan parity and immediately before apply.
+        bash -euo pipefail -c "$INPUTS_PRE_APPLY_COMMAND"
+
     - if: ${{ inputs.command == 'apply' }}
       id: apply
       env:
@@ -637,6 +645,10 @@ inputs:
   plan-parity:
     default: "false"
     description: "Guard against stale apply by re-planning and comparing before apply: `false` (off), `true` (on; on mismatch warn and proceed), or `strict` (on; on mismatch fail). On a match the freshly-generated plan replaces the queued one (e.g., `strict`)."
+    required: false
+  pre-apply-command:
+    default: ""
+    description: "Run a shell command after plan parity and immediately before apply. A non-zero exit code prevents the apply."
     required: false
   pr-number:
     default: ""
