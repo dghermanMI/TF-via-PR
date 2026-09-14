@@ -150,17 +150,18 @@ runs:
         # Which commit was this plan built from? The apply uses this to pick the right
         # plan artifact (see the download step below).
         #
-        # On a plan run, that's just the commit we checked out. On a merge-triggered
-        # apply it isn't: we're on the merge commit, but the plan was built on the PR's
-        # head commit. So look up the PR and use its head SHA.
+        # On a plan run, that's the commit we checked out. On merge-triggered and
+        # explicitly targeted applies, use the already-resolved PR number to find the
+        # original PR head. This works for push, merge_group, squash, rebase and
+        # unsupported triggers that supply pr-number.
         #
-        # Using the PR head (rather than the merge commit) also means squash and rebase
-        # merges work the same as merge commits -- we never look at what landed on the
-        # default branch, only at what the PR run planned.
+        # A workflow_run already provides the exact head SHA of its source run. Keep
+        # that value unless the caller explicitly targets a different PR.
         plan_sha="$GH_COMMIT_SHA"
-        if [[ "$INPUTS_COMMAND" == "apply" && "$GITHUB_EVENT_NAME" != "pull_request" ]]; then
-          pr_head_sha=$(gh api "/repos/$GH_REPO/commits/$GH_COMMIT_SHA/pulls" --header "$GH_API" --method GET \
-            --jq '[.[] | select(.merged_at != null)] | sort_by(.merged_at) | last | .head.sha // empty' 2>/dev/null || true)
+        if [[ "$INPUTS_COMMAND" == "apply" && "$GITHUB_EVENT_NAME" != "pull_request" && \
+          "${pr_number:-0}" != "0" && ( "$GITHUB_EVENT_NAME" != "workflow_run" || -n "$INPUTS_PR_NUMBER" ) ]]; then
+          pr_head_sha=$(gh api "/repos/$GH_REPO/pulls/${pr_number:-0}" --header "$GH_API" --method GET \
+            --jq '.head.sha // empty' 2>/dev/null || true)
           if [[ -n "$pr_head_sha" ]]; then plan_sha="$pr_head_sha"; fi
         fi
         echo "GH_PLAN_SHA=$plan_sha" >> "$GITHUB_ENV"
@@ -243,14 +244,15 @@ runs:
         # head_sha is the one field that tracks the commit instead of the upload, so
         # match on that. The rest:
         #   expired      - expired artifacts still show up in the listing
-        #   per_page=100 - the default 30 can push a real match onto page 2
+        #   pagination   - a long-lived PR can have more than 100 matching artifacts
         #   created_at   - only breaks ties between re-runs of the *same* commit,
         #                  where every artifact is a plan of identical code
-        artifact_id=$(gh api "/repos/$GH_REPO/actions/artifacts?name=$GH_IDENTIFIER_NAME&per_page=100" --header "$GH_API" --method GET --jq "
-          [.artifacts[]
+        artifact_id=$(gh api "/repos/$GH_REPO/actions/artifacts?name=$GH_IDENTIFIER_NAME&per_page=100" \
+          --header "$GH_API" --method GET --paginate 2>/dev/null | jq --raw-output --slurp --arg plan_sha "$GH_PLAN_SHA" '
+          [.[] | .artifacts[]
            | select(.expired == false)
-           | select(.workflow_run.head_sha == \"$GH_PLAN_SHA\")]
-          | sort_by(.created_at) | last | .id // empty" 2>/dev/null)
+           | select(.workflow_run.head_sha == $plan_sha)]
+          | sort_by(.created_at) | last | .id // empty')
         if [[ -z "$artifact_id" ]]; then
           echo "::error title=Plan file not found::No plan artifact named '$GH_IDENTIFIER_NAME' was built from commit $GH_PLAN_SHA. Re-run the plan for that commit, then re-run this apply."
           exit 1
