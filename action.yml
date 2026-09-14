@@ -120,6 +120,7 @@ runs:
         GH_EVENT_NUMBER: ${{ github.event.number || github.event.issue.number }}
         GH_HEAD_REF: ${{ github.event.pull_request.head.label || github.ref_name || github.head_ref || github.ref || '0' }}
         GH_WORKFLOW_RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        INPUTS_COMMAND: ${{ inputs.command }}
         INPUTS_PR_NUMBER: ${{ inputs.pr-number }}
         INPUTS_TOOL: ${{ inputs.tool }}
       shell: bash
@@ -145,6 +146,26 @@ runs:
           fi
         fi
         echo "pr=${pr_number:-0}" >> "$GITHUB_OUTPUT"
+
+        # Which commit was this plan built from? The apply uses this to pick the right
+        # plan artifact (see the download step below).
+        #
+        # On a plan run, that's the commit we checked out. On merge-triggered and
+        # explicitly targeted applies, use the already-resolved PR number to find the
+        # original PR head. This works for push, merge_group, squash, rebase and
+        # unsupported triggers that supply pr-number.
+        #
+        # A workflow_run already provides the exact head SHA of its source run. Keep
+        # that value unless the caller explicitly targets a different PR.
+        plan_sha="$GH_COMMIT_SHA"
+        if [[ "$INPUTS_COMMAND" == "apply" && "$GITHUB_EVENT_NAME" != "pull_request" && \
+          "${pr_number:-0}" != "0" && ( "$GITHUB_EVENT_NAME" != "workflow_run" || -n "$INPUTS_PR_NUMBER" ) ]]; then
+          pr_head_sha=$(gh api "/repos/$GH_REPO/pulls/${pr_number:-0}" --header "$GH_API" --method GET \
+            --jq '.head.sha // empty' 2>/dev/null || true)
+          if [[ -n "$pr_head_sha" ]]; then plan_sha="$pr_head_sha"; fi
+        fi
+        echo "GH_PLAN_SHA=$plan_sha" >> "$GITHUB_ENV"
+        echo "plan-sha=$plan_sha" >> "$GITHUB_OUTPUT"
 
         # Generate identifier for the workflow run using MD5 hashing algorithm for concise and unique naming.
         identifier="${{ steps.arg.outputs.arg-chdir }}${{ steps.arg.outputs.arg-workspace }}${{ steps.arg.outputs.arg-backend-config }}${{ steps.arg.outputs.arg-var-file }}${{ steps.arg.outputs.arg-var }}${{ steps.arg.outputs.arg-replace }}${{ steps.arg.outputs.arg-target }}${{ steps.arg.outputs.arg-destroy }}"
@@ -210,9 +231,32 @@ runs:
       shell: bash
       run: |
         # Download plan file.
-        # Get the artifact ID of the latest matching plan files for download.
-        artifact_id=$(gh api /repos/$GH_REPO/actions/artifacts --header "$GH_API" --method GET --field "name=$GH_IDENTIFIER_NAME" --jq '.artifacts[0].id' 2>/dev/null)
-        if [[ -z "$artifact_id" ]]; then echo "Unable to locate plan file: $GH_IDENTIFIER_NAME." && exit 1; fi
+        # Find the plan artifact that was built from this PR's head commit.
+        #
+        # Artifact names don't include the commit, so every commit on a PR uploads
+        # under the same name and several can match. We used to take .artifacts[0]
+        # and hope it was the newest -- but this API doesn't promise any order, so
+        # that could hand the apply a plan from an earlier commit on the same PR.
+        #
+        # Sorting by created_at wouldn't help: overwrite:true re-creates the artifact,
+        # so re-running an old commit's job gives it a brand new timestamp.
+        #
+        # head_sha is the one field that tracks the commit instead of the upload, so
+        # match on that. The rest:
+        #   expired      - expired artifacts still show up in the listing
+        #   pagination   - a long-lived PR can have more than 100 matching artifacts
+        #   created_at   - only breaks ties between re-runs of the *same* commit,
+        #                  where every artifact is a plan of identical code
+        artifact_id=$(gh api "/repos/$GH_REPO/actions/artifacts?name=$GH_IDENTIFIER_NAME&per_page=100" \
+          --header "$GH_API" --method GET --paginate 2>/dev/null | jq --raw-output --slurp --arg plan_sha "$GH_PLAN_SHA" '
+          [.[] | .artifacts[]
+           | select(.expired == false)
+           | select(.workflow_run.head_sha == $plan_sha)]
+          | sort_by(.created_at) | last | .id // empty')
+        if [[ -z "$artifact_id" ]]; then
+          echo "::error title=Plan file not found::No plan artifact named '$GH_IDENTIFIER_NAME' was built from commit $GH_PLAN_SHA. Re-run the plan for that commit, then re-run this apply."
+          exit 1
+        fi
         gh api /repos/$GH_REPO/actions/artifacts/${artifact_id}/zip --header "$GH_API" --method GET > "$GH_IDENTIFIER_NAME.zip"
 
         # Unzip the plan file to the working directory, then clean up the zip file.
