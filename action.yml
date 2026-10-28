@@ -60,7 +60,7 @@ runs:
         # Check for required tools.
         deps=(gh jq md5sum unzip "$INPUTS_TOOL")
         if [[ -n "$INPUTS_PLAN_ENCRYPT" ]]; then deps+=(openssl); fi
-        if [[ "$INPUTS_PLAN_PARITY" == "true" ]]; then deps+=(diff); fi
+        if [[ "$INPUTS_PLAN_PARITY" == "true" || "$INPUTS_PLAN_PARITY" == "strict" ]]; then deps+=(diff); fi
         for dep in "${deps[@]}"; do
           command -v "$dep" > /dev/null || { echo "::error::Please install $dep before running this action."; exit 1; }
         done
@@ -273,11 +273,12 @@ runs:
         path: ${{ steps.setup.outputs.path }}${{ inputs.plan-encrypt != '' && '.encrypted' || '' }}
         retention-days: ${{ inputs.retention-days }}
 
-    - if: ${{ inputs.plan-parity == 'true' && (steps.download.outcome == 'success' || inputs.plan-file != '') }}
+    - if: ${{ (inputs.plan-parity == 'true' || inputs.plan-parity == 'strict') && (steps.download.outcome == 'success' || inputs.plan-file != '') }}
       env:
         ARGS: ${{ steps.setup.outputs.parity }}
         CHDIR: ${{ steps.setup.outputs.chdir }}
         INPUTS_PLAN_FILE: ${{ inputs.plan-file }}
+        INPUTS_PLAN_PARITY: ${{ inputs.plan-parity }}
         INPUTS_TOOL: ${{ inputs.tool }}
         path: ${{ steps.setup.outputs.path }}
       shell: bash
@@ -291,8 +292,22 @@ runs:
         "$INPUTS_TOOL" ${CHDIR:+"$CHDIR"} show -json tfplan.parity | jq --sort-keys "$filter" > tfplan.new
         "$INPUTS_TOOL" ${CHDIR:+"$CHDIR"} show -json tfplan | jq --sort-keys "$filter" > tfplan.old
         # Replace the old plan file with the new one if identical, to prevent avoidable stale apply.
-        diff --brief tfplan.new tfplan.old && mv --force --verbose "$path.parity" "$path"
+        if diff --brief tfplan.new tfplan.old; then
+          mv --force --verbose "$path.parity" "$path"
+          rm --force tfplan.new tfplan.old
+          exit 0
+        fi
+        # Otherwise, the old plan no longer matches current state: warn and proceed, or fail if strict.
+        # List only addresses and actions, never attribute values, to avoid leaking secrets.
+        summarize() { jq --raw-output '.[] | "\(.change.actions | join(",")) \(.address)"' "$1" | sort; }
+        echo "Resource changes (< old plan, > new plan):"
+        if diff <(summarize tfplan.old) <(summarize tfplan.new); then echo "Same resources and actions; attribute values differ (not shown)."; fi
         rm --force tfplan.new tfplan.old "$path.parity"
+        if [[ "$INPUTS_PLAN_PARITY" == "strict" ]]; then
+          echo "::error::Plan parity mismatch: refusing to apply a plan that no longer matches current state."
+          exit 1
+        fi
+        echo "::warning::Plan parity mismatch: applying a plan that no longer matches current state."
 
     - if: ${{ inputs.command == 'apply' }}
       id: apply
@@ -311,7 +326,7 @@ runs:
         mapfile -t args < <(printf '%s' "$ARGS")
         # Without auto-approve, apply the plan file.
         if [[ "${INPUTS_ARG_AUTO_APPROVE,,}" != "true" ]]; then
-          if [[ -n "$INPUTS_PLAN_FILE" && "$INPUTS_PLAN_PARITY" != "true" ]]; then mv --force --verbose "$INPUTS_PLAN_FILE" "$path" 2>/dev/null; fi
+          if [[ -n "$INPUTS_PLAN_FILE" && "$INPUTS_PLAN_PARITY" != "true" && "$INPUTS_PLAN_PARITY" != "strict" ]]; then mv --force --verbose "$INPUTS_PLAN_FILE" "$path" 2>/dev/null; fi
           args+=(tfplan)
         fi
         printf '%s\n' "$INPUTS_TOOL apply" ${CHDIR:+" $CHDIR"} "${args[@]/#/ }" > tf.command.txt
@@ -579,7 +594,7 @@ inputs:
     required: false
   plan-parity:
     default: "false"
-    description: "Replace the plan file if it matches a newly-generated one to prevent stale apply (e.g., `false`)."
+    description: "Replace the plan file if it matches a newly-generated one to prevent stale apply; on mismatch, `true` warns and proceeds while `strict` fails (e.g., `false`)."
     required: false
   pr-number:
     default: ""
