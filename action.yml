@@ -347,18 +347,24 @@ runs:
         # If they differ, the plan queued for apply no longer matches a fresh plan of current state (e.g. the wrong plan
         # artifact was downloaded, or state changed since the plan was generated). With plan-parity: true, warn and proceed
         # (preserving existing behavior); with plan-parity: strict, fail instead of applying a stale plan.
+        # Never print the full JSON diff: resource_changes carries attribute values, which can leak secrets to logs (#498).
+        # On mismatch, only list resource addresses and actions, which are already shown in the plan output.
+        summarize() { jq --raw-output '.[] | "\(.change.actions | join(",")) \(.address)"' "$1" | sort; }
         if diff --brief tfplan.new tfplan.old; then
           mv --force --verbose "$parity_path" "$path"
           rm --force tfplan.new tfplan.old "$parity_path"
-        elif [[ "$INPUTS_PLAN_PARITY" == "strict" ]]; then
-          echo "::error title=Plan parity check failed::The plan queued for apply does not match a fresh plan of current state; refusing to apply a stale plan (plan-parity: strict)."
-          diff tfplan.new tfplan.old || true
-          rm --force tfplan.new tfplan.old "$parity_path"
-          exit 1
         else
-          echo "::warning title=Plan parity mismatch::The plan queued for apply does not match a fresh plan of current state; applying it anyway. Set plan-parity: strict to fail instead."
-          diff tfplan.new tfplan.old || true
+          if [[ "$INPUTS_PLAN_PARITY" == "strict" ]]; then
+            echo "::error title=Plan parity check failed::The plan queued for apply does not match a fresh plan of current state; refusing to apply a stale plan (plan-parity: strict)."
+          else
+            echo "::warning title=Plan parity mismatch::The plan queued for apply does not match a fresh plan of current state; applying it anyway. Set plan-parity: strict to fail instead."
+          fi
+          echo "Resource changes (< queued plan, > fresh plan):"
+          if diff <(summarize tfplan.old) <(summarize tfplan.new); then
+            echo "Same resources and actions; attribute values differ (not shown)."
+          fi
           rm --force tfplan.new tfplan.old "$parity_path"
+          if [[ "$INPUTS_PLAN_PARITY" == "strict" ]]; then exit 1; fi
         fi
 
     - if: ${{ inputs.command == 'apply' && inputs.pre-apply-command != '' }}
