@@ -290,9 +290,11 @@ runs:
         filter='[(.resource_changes? // [])[] | select(.change.actions != ["no-op"])]'
         "$INPUTS_TOOL" ${CHDIR:+"$CHDIR"} show -json tfplan.parity | jq --sort-keys "$filter" > tfplan.new
         "$INPUTS_TOOL" ${CHDIR:+"$CHDIR"} show -json tfplan | jq --sort-keys "$filter" > tfplan.old
-        # Replace the old plan file with the new one if identical, to prevent avoidable stale apply.
-        diff --brief tfplan.new tfplan.old && mv --force --verbose "$path.parity" "$path"
+        # Replace the old plan file with the new one if identical, to prevent avoidable stale apply, otherwise fail.
+        # Use "--brief" to avoid logging a lengthy diff, which may also leak secrets.
+        if diff --brief tfplan.new tfplan.old; then mv --force --verbose "$path.parity" "$path"; else parity=1; fi
         rm --force tfplan.new tfplan.old "$path.parity"
+        if [[ -n "$parity" ]]; then echo "::error::Plan parity mismatch: refusing to apply a plan that no longer matches current state."; exit 1; fi
 
     - if: ${{ inputs.command == 'apply' }}
       id: apply
