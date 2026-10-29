@@ -22,11 +22,10 @@ jobs:
         tool:
           - tofu
           - terraform
-        # Format: <plan-parity>-<old plan value>-<new plan value>-<expected outcome>.
+        # Format: <old plan value>-<new plan value>-<expected outcome>.
         test:
-          - strict-v1-v2-failure
-          - strict-v2-v2-success
-          - true-v1-v2-success
+          - v1-v2-failure
+          - v2-v2-success
 
     steps:
       - name: Checkout repository
@@ -53,8 +52,8 @@ jobs:
         env:
           TEST: ${{ matrix.test }}
         run: |
-          IFS=- read -r parity old new expect <<< "$TEST"
-          printf '%s\n' "parity=$parity" "old=$old" "new=$new" "expect=$expect" >> "$GITHUB_OUTPUT"
+          IFS=- read -r old new expect <<< "$TEST"
+          printf '%s\n' "old=$old" "new=$new" "expect=$expect" >> "$GITHUB_OUTPUT"
 
       - name: Plan old
         env:
@@ -75,7 +74,7 @@ jobs:
           arg-lock: false
           arg-var: content=${{ steps.test.outputs.new }}
           plan-file: tests/parity/old.tfplan
-          plan-parity: ${{ steps.test.outputs.parity }}
+          plan-parity: true
           comment-pr: never
           tag-actor: never
 
