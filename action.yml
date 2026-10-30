@@ -216,7 +216,8 @@ runs:
       shell: bash
       run: |
         # Download the plan file built from the PR's head commit, otherwise the latest one.
-        sha=$(gh api "/repos/$GH_REPO/pulls/$GH_PR_NUMBER" --header "$GH_API" --method GET --jq '.head.sha' 2>/dev/null) || true
+        # Skip the lookup without a PR, since "gh api" prints the 404 response body to stdout on failure.
+        if [[ "$GH_PR_NUMBER" != "0" ]]; then sha=$(gh api "/repos/$GH_REPO/pulls/$GH_PR_NUMBER" --header "$GH_API" --method GET --jq '.head.sha' 2>/dev/null) || sha=""; fi
         artifact=$(gh api "/repos/$GH_REPO/actions/artifacts" --header "$GH_API" --method GET --paginate --raw-field "$GH_PER_PAGE" --raw-field "name=$GH_IDENTIFIER_NAME" | jq --raw-output --slurp --arg sha "${sha:-$GH_COMMIT_SHA}" '[.[].artifacts[]] | sort_by([.workflow_run.head_sha == $sha, .created_at]) | last // empty | "\(.id) \(.workflow_run.head_sha)"')
         read -r artifact_id artifact_sha <<< "$artifact"
         if [[ -z "$artifact_id" ]]; then echo "::error::Unable to locate plan file: $GH_IDENTIFIER_NAME."; exit 1; fi
