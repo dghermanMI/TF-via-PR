@@ -211,25 +211,14 @@ runs:
         GH_COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || github.sha }}
         GH_PR_NUMBER: ${{ steps.setup.outputs.pr }}
         INPUTS_ARG_CHDIR: ${{ inputs.arg-chdir || inputs.working-directory }}
-        INPUTS_PR_NUMBER: ${{ inputs.pr-number }}
       shell: bash
       run: |
-        # Get the commit the plan was built from: the PR's head, unless the event already provides it.
-        plan_sha="$GH_COMMIT_SHA"
-        if [[ "$GITHUB_EVENT_NAME" != pull_request* && "$GH_PR_NUMBER" != "0" && ("$GITHUB_EVENT_NAME" != "workflow_run" || -n "$INPUTS_PR_NUMBER") ]]; then
-          head_sha=$(gh api "/repos/$GH_REPO/pulls/$GH_PR_NUMBER" --header "$GH_API" --method GET --jq '.head.sha // empty') || true
-          plan_sha="${head_sha:-$GH_COMMIT_SHA}"
-        fi
-        # Download the latest matching plan file from that commit, since every commit on a PR uploads under the same name.
-        # Re-runs re-create the artifact with a new "created_at", so it's only used to pick between re-runs of the same commit.
-        artifacts=$(gh api "/repos/$GH_REPO/actions/artifacts" --header "$GH_API" --method GET --paginate --raw-field "name=$GH_IDENTIFIER_NAME" --raw-field per_page=100 | jq --slurp '[.[].artifacts[] | select(.expired == false)] | sort_by(.created_at)')
-        artifact_id=$(jq --raw-output --arg sha "$plan_sha" 'map(select(.workflow_run.head_sha == $sha)) | last | .id // empty' <<< "$artifacts")
-        # Otherwise, fall back to the latest one (e.g., "issue_comment" runs record the default branch's commit instead).
-        if [[ -z "$artifact_id" ]]; then
-          artifact_id=$(jq --raw-output 'last | .id // empty' <<< "$artifacts")
-          if [[ -n "$artifact_id" ]]; then echo "::warning::Unable to locate plan file from commit $plan_sha, using the latest one instead."; fi
-        fi
+        # Download the plan file built from the PR's head commit, otherwise the latest one.
+        sha=$(gh api "/repos/$GH_REPO/pulls/$GH_PR_NUMBER" --header "$GH_API" --method GET --jq '.head.sha' 2>/dev/null) || true
+        artifact=$(gh api "/repos/$GH_REPO/actions/artifacts" --header "$GH_API" --method GET --paginate --raw-field "name=$GH_IDENTIFIER_NAME" | jq --raw-output --slurp --arg sha "${sha:-$GH_COMMIT_SHA}" '[.[].artifacts[]] | sort_by([.workflow_run.head_sha == $sha, .created_at]) | last // empty | "\(.id) \(.workflow_run.head_sha)"')
+        read -r artifact_id artifact_sha <<< "$artifact"
         if [[ -z "$artifact_id" ]]; then echo "::error::Unable to locate plan file: $GH_IDENTIFIER_NAME."; exit 1; fi
+        if [[ "$artifact_sha" != "${sha:-$GH_COMMIT_SHA}" ]]; then echo "::warning::Unable to locate plan file from the latest commit, using the latest one instead."; fi
         gh api "/repos/$GH_REPO/actions/artifacts/$artifact_id/zip" --header "$GH_API" --method GET > "$GH_IDENTIFIER_NAME.zip"
         unzip -o "$GH_IDENTIFIER_NAME.zip" -d "${INPUTS_ARG_CHDIR:-.}"
         rm --force "$GH_IDENTIFIER_NAME.zip"
